@@ -456,8 +456,11 @@ def main():
 
     train_examples = None
     num_train_steps = None
+    eval_examples = processor.get_dev_examples(args.data_dir)
+    random.shuffle(eval_examples)
     if args.do_train:
-        train_examples = processor.get_train_examples(args.data_dir)
+        train_examples = processor.get_train_examples(args.data_dir) + eval_examples[1:round(len(eval_examples)*0.7)+1]
+        eval_examples = eval_examples[round(len(eval_examples)*0.7):]
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
@@ -493,8 +496,9 @@ def main():
                          warmup=args.warmup_proportion,
                          t_total=num_train_steps)
 
+
+    
     if args.do_eval:
-        eval_examples = processor.get_dev_examples(args.data_dir)
         eval_dataloader = DataLoader(dataset=HyperpartisanData(eval_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.eval_batch_size)
 
     global_step = 0
@@ -547,7 +551,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
 
-                if (global_step + 1) % 100 == 0:
+                if (global_step + 1) % 2000 == 0:
                     if args.do_eval:
                         model.eval()
                         eval_loss, eval_accuracy = 0, 0
