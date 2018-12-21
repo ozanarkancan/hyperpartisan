@@ -240,6 +240,15 @@ def main():
         df = df.apply(get_stuff, axis=1)
         df.drop(columns=['xml'], inplace=True)
 
+        #Some cleaning
+        df.text = df.text.str.replace(r"&#160;",r" ")
+        df.text = df.text.str.replace(r"\n_{1,}\s?\n",r"\n")
+        df.text = df.text.str.replace(r"\n\s?\*{2,}\s?\n",r"\n")
+        df.text = df.text.str.replace(r"&amp;",r"&")
+        df.text = df.text.str.replace(r"\n_{1,}\s?$","")
+        df.text = df.text.str.replace(r"^_{1,}\s?\n","")
+        df.text = df.text.str.replace(r"\nADVERTISEMENT\s?\n","\n")
+
         examples = []
         for (i, line) in df.iterrows():
             guid = line.id
