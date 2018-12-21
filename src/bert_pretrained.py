@@ -37,6 +37,8 @@ from pytorch_pretrained_bert.tokenization import printable_text, BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification
 from pytorch_pretrained_bert.optimization import BertAdam
 
+from tensorboardX import SummaryWriter
+
 logging.basicConfig(filename = '{}_log.txt'.format(datetime.datetime.now()),
                     format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s', 
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -404,9 +406,20 @@ def main():
                         default="",
                         type=str,
                         help="The path of model state.")
+    parser.add_argument('--eval_each', 
+                        type=int, 
+                        default=2000,
+                        help="step size for eval")
+    parser.add_argument('--log_path',
+                        default='../logs/runs/default',
+                        type=str,
+                        required=False,
+                        help='tensorboard log path')
 
 
     args = parser.parse_args()
+    
+    writer = SummaryWriter(args.log_path)
 
     processors = {
         "hyperpartisan": HyperProcessor,
@@ -457,10 +470,8 @@ def main():
     train_examples = None
     num_train_steps = None
     eval_examples = processor.get_dev_examples(args.data_dir)
-    random.shuffle(eval_examples)
     if args.do_train:
-        train_examples = processor.get_train_examples(args.data_dir) + eval_examples[1:round(len(eval_examples)*0.7)+1]
-        eval_examples = eval_examples[round(len(eval_examples)*0.7):]
+        train_examples = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
@@ -551,7 +562,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
 
-                if (global_step + 1) % 2000 == 0:
+                if (global_step + 1) % args.eval_each == 0:
                     if args.do_eval:
                         model.eval()
                         eval_loss, eval_accuracy = 0, 0
@@ -582,6 +593,10 @@ def main():
                                   'eval_accuracy': eval_accuracy,
                                   'global_step': global_step,
                                   'loss': tr_loss/nb_tr_steps}
+                        
+                        writer.add_scalar('eval_loss', eval_loss, global_step)
+                        writer.add_scalar('eval_accuracy', eval_accuracy, global_step)
+                        writer.add_scalar('loss', loss, global_step)
 
                         if best_acc < eval_accuracy:
                             best_acc = eval_accuracy
@@ -595,6 +610,7 @@ def main():
                                 writer.write("%s = %s\n" % (key, str(result[key])))
                             writer.write("\n ********** \n")
                         model.train() # back to training
+    writer.close()
 
     if args.do_eval:
         logger.info("***** Running evaluation *****")
