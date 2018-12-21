@@ -50,6 +50,8 @@ PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
 
 logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
 
+global args
+
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
@@ -126,14 +128,14 @@ class DataProcessor2(object):
         """Reads a comma separated value file."""
         lines = pd.read_csv(input_file)
 
-        # Some cleaning
-        lines.text = lines.text.str.replace(r"&#160;",r" ")
-        lines.text = lines.text.str.replace(r"\n_{1,}\s?\n",r"\n")
-        lines.text = lines.text.str.replace(r"\n\s?\*{2,}\s?\n",r"\n")
-        lines.text = lines.text.str.replace(r"&amp;",r"&")
-        lines.text = lines.text.str.replace(r"\n_{1,}\s?$","")
-        lines.text = lines.text.str.replace(r"^_{1,}\s?\n","")
-        lines.text = lines.text.str.replace(r"\nADVERTISEMENT\s?\n","\n")
+        if args.clean_data:
+            lines.text = lines.text.str.replace(r"&#160;",r" ")
+            lines.text = lines.text.str.replace(r"\n_{1,}\s?\n",r"\n")
+            lines.text = lines.text.str.replace(r"\n\s?\*{2,}\s?\n",r"\n")
+            lines.text = lines.text.str.replace(r"&amp;",r"&")
+            lines.text = lines.text.str.replace(r"\n_{1,}\s?$","")
+            lines.text = lines.text.str.replace(r"^_{1,}\s?\n","")
+            lines.text = lines.text.str.replace(r"\nADVERTISEMENT\s?\n","\n")
 
         return lines
 
@@ -327,6 +329,8 @@ def set_optimizer_params_grad(named_params_optimizer, named_params_model, test_n
     return is_nan
 
 def main():
+    global args
+
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -364,6 +368,10 @@ def main():
                         default=False,
                         action='store_true',
                         help="Whether to run eval on the dev set.")
+    parser.add_argument("--clean_data",
+                        default=False,
+                        action='store_true',
+                        help="Whether to clean the data.")
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,

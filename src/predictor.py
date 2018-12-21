@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
                                                Path.home() / '.pytorch_pretrained_bert'))
 
+
+clean_data = False
 runOutputFileName = "prediction.txt"
 max_seq_length = 512
 bert_model = "bert-base-uncased"
@@ -240,14 +242,14 @@ def main():
         df = df.apply(get_stuff, axis=1)
         df.drop(columns=['xml'], inplace=True)
 
-        #Some cleaning
-        df.text = df.text.str.replace(r"&#160;",r" ")
-        df.text = df.text.str.replace(r"\n_{1,}\s?\n",r"\n")
-        df.text = df.text.str.replace(r"\n\s?\*{2,}\s?\n",r"\n")
-        df.text = df.text.str.replace(r"&amp;",r"&")
-        df.text = df.text.str.replace(r"\n_{1,}\s?$","")
-        df.text = df.text.str.replace(r"^_{1,}\s?\n","")
-        df.text = df.text.str.replace(r"\nADVERTISEMENT\s?\n","\n")
+        if clean_data:
+            df.text = df.text.str.replace(r"&#160;",r" ")
+            df.text = df.text.str.replace(r"\n_{1,}\s?\n",r"\n")
+            df.text = df.text.str.replace(r"\n\s?\*{2,}\s?\n",r"\n")
+            df.text = df.text.str.replace(r"&amp;",r"&")
+            df.text = df.text.str.replace(r"\n_{1,}\s?$","")
+            df.text = df.text.str.replace(r"^_{1,}\s?\n","")
+            df.text = df.text.str.replace(r"\nADVERTISEMENT\s?\n","\n")
 
         examples = []
         for (i, line) in df.iterrows():
