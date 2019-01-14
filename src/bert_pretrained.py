@@ -437,7 +437,7 @@ def main():
 
     args = parser.parse_args()
     
-    writer = SummaryWriter(args.log_path)
+    twriter = SummaryWriter(args.log_path)
 
     processors = {
         "hyperpartisan": HyperProcessor,
@@ -612,9 +612,9 @@ def main():
                                   'global_step': global_step,
                                   'loss': tr_loss/nb_tr_steps}
                         
-                        writer.add_scalar('eval_loss', eval_loss, global_step)
-                        writer.add_scalar('eval_accuracy', eval_accuracy, global_step)
-                        writer.add_scalar('loss', loss, global_step)
+                        twriter.add_scalar('eval_loss', eval_loss, global_step)
+                        twriter.add_scalar('eval_accuracy', eval_accuracy, global_step)
+                        twriter.add_scalar('loss', tr_loss/nb_tr_steps, global_step)
 
                         if best_acc < eval_accuracy:
                             best_acc = eval_accuracy
@@ -628,7 +628,7 @@ def main():
                                 writer.write("%s = %s\n" % (key, str(result[key])))
                             writer.write("\n ********** \n")
                         model.train() # back to training
-    writer.close()
+    twriter.close()
 
     if args.do_eval:
         logger.info("***** Running evaluation *****")
