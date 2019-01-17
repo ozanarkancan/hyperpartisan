@@ -86,15 +86,22 @@ def get_scores(rates):
 class BertDataset(Dataset):
     def __init__(self, input_file, input_length=0):
         self.file = open(input_file, "r", encoding="utf-8")
+        self.input_file = input_file
         if input_length == 0:
             self.input_length = sum([1 for line in self.file])
         else:
             self.input_length = input_length
+        self.sample_count = 0
 
     def __len__(self):
         return self.input_length
 
     def __getitem__(self, item):
+
+        self.sample_count += 1
+        if self.sample_count == self.input_length:
+            self.file = open(self.input_file, "r", encoding="utf-8")
+            self.sample_count = 0
 
         line = self.file.__next__().strip()
         line = line.split("\t")
@@ -186,6 +193,10 @@ def main():
                         default=0,
                         type=int,
                         help="Length of the input.")
+    parser.add_argument("--eval_input_length",
+                        default=0,
+                        type=int,
+                        help="Length of the eval input.")
     parser.add_argument("--learning_rate",
                         default=5e-5,
                         type=float,
@@ -310,7 +321,7 @@ def main():
 #        logger.info("inpput_id size = %d", len(train_features[0].input_ids))
 
         train_dataset = BertDataset(args.input_file, input_length)
-        eval_dataset = BertDataset(args.eval_input_file, 5000)
+        eval_dataset = BertDataset(args.eval_input_file, args.eval_input_length)
 
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_dataset)
@@ -323,7 +334,7 @@ def main():
         eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.train_batch_size)
 
         logger.info("Created DataLoader")
-        best_loss = 1.0
+        best_loss = 5.0
         model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
@@ -339,33 +350,24 @@ def main():
                     loss = loss / args.gradient_accumulation_steps
                 loss.backward()
 
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 or args.optimize_on_cpu:
-                        if args.fp16 and args.loss_scale != 1.0:
-                            # scale down gradients for fp16 training
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data / args.loss_scale
-                        is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-                        if is_nan:
-                            logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-                            args.loss_scale = args.loss_scale / 2
-                            model.zero_grad()
-                            continue
-                        optimizer.step()
-                        copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-                    else:
-                        # modify learning rate with special warm up BERT uses
-                        lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_steps, args.warmup_proportion)
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = lr_this_step
-                        optimizer.step()
+                # if (step + 1) % args.gradient_accumulation_steps == 0:
+                #     # modify learning rate with special warm up BERT uses
+                #     lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_steps, args.warmup_proportion)
+                #     for param_group in optimizer.param_groups:
+                #         param_group['lr'] = lr_this_step
+                #     optimizer.step()
 
-                    optimizer.zero_grad()
+                lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_steps, args.warmup_proportion)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr_this_step
+                optimizer.step()
 
-                if step % 5000 == 0:
-                    input_ids=input_mask=segment_ids=masked_lm_ids=next_sent_label=loss=None
-                    torch.cuda.empty_cache()
+                optimizer.zero_grad()
+
+                if (step + 1) % 5000 == 0:
+                    # input_ids=input_mask=segment_ids=masked_lm_ids=next_sent_label=loss=None
+                    # del input_ids,input_mask,segment_ids,masked_lm_ids,next_sent_label,loss
+                    # torch.cuda.empty_cache()
                     model.eval()
                     bcount = 0
                     total_loss = 0.0
@@ -375,17 +377,21 @@ def main():
                         cur_loss = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
                         if n_gpu > 1:
                             cur_loss = cur_loss.mean() # mean() to average on multi-gpu.
-                        total_loss += cur_loss
+
+                        total_loss += cur_loss.item()
                         bcount += 1
 
                     curr_loss = total_loss / bcount
-                    if best_loss > cur_loss:
-                        best_loss = cur_loss
-                        logger.info("** Saving model - Loss = " + str(cur_loss) + " **")
+                    logger.info("Loss = " + str(curr_loss))
+                    if best_loss > curr_loss:
+                        best_loss = curr_loss
+                        logger.info("** Saving model - Loss = " + str(best_loss) + " **")
                         model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
                         output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
                         torch.save(model_to_save.state_dict(), output_model_file)
-                    torch.cuda.empty_cache()
+
+                    # del input_ids,input_mask,segment_ids,masked_lm_ids,next_sent_label,cur_loss
+                    # torch.cuda.empty_cache()
                     model.train()
 
                 global_step += 1
