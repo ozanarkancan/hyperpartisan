@@ -30,10 +30,10 @@ import math
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import Dataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
-from pytorch_pretrained_bert.tokenization import printable_text, BertTokenizer
+from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForPreTraining
 from pytorch_pretrained_bert.optimization import BertAdam
 
@@ -46,107 +46,6 @@ PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
                                                Path.home() / '.pytorch_pretrained_bert'))
 
 logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
-
-
-class InputFeatures(object):
-    """A single set of features of data."""
-
-    def __init__(self, input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label):
-        self.input_ids = input_ids
-        self.input_mask = input_mask
-        self.segment_ids = segment_ids
-        self.masked_lm_ids = masked_lm_ids
-        self.next_sent_label = next_sent_label
-
-
-class DataProcessor(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a comma separated value file."""
-        lines = pd.read_csv(input_file, sep="\t")
-        return lines
-
-
-
-class HyperProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train_sent.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "pre_train.tsv")), "train")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            input_ids = eval(line.input_ids)
-            input_mask = eval(line.input_mask)
-            segment_ids = eval(line.segment_ids)
-            next_sent_label = line.next_sent_label
-            masked_lm_ids = eval(line.masked_lm_labels)
-            examples.append(InputFeatures(input_ids=input_ids,
-                                          input_mask=input_mask,
-                                          segment_ids=segment_ids,
-                                          masked_lm_ids=masked_lm_ids,
-                                          next_sent_label=next_sent_label))
-
-        return examples
-
-
-class EmwProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "random_scmp.csv")), "dev")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            input_ids = eval(line.input_ids)
-            input_mask = eval(line.input_mask)
-            segment_ids = eval(line.segment_ids)
-            next_sent_label = line.next_sent_label
-            masked_lm_ids = eval(line.masked_lm_labels)
-            examples.append(InputFeatures(input_ids=input_ids,
-                                          input_mask=input_mask,
-                                          segment_ids=segment_ids,
-                                          masked_lm_ids=masked_lm_ids,
-                                          next_sent_label=next_sent_label))
-
-        return examples
 
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
@@ -162,6 +61,11 @@ def get_rates(out, labels):
     FN = len(subtr[subtr == 1])
 
     return np.array([TP, TN, FP, FN])
+
+def warmup_linear(x, warmup=0.002):
+    if x < warmup:
+        return x/warmup
+    return 1.0 - x
 
 def get_scores(rates):
 
@@ -179,6 +83,34 @@ def get_scores(rates):
 
     return balanced_acc, f1_1, f1_2, mcc
 
+class BertDataset(Dataset):
+    def __init__(self, input_file, input_length=0):
+        self.file = open(input_file, "r", encoding="utf-8")
+        if input_length == 0:
+            self.input_length = sum([1 for line in self.file])
+        else:
+            self.input_length = input_length
+
+    def __len__(self):
+        return self.input_length
+
+    def __getitem__(self, item):
+
+        line = self.file.__next__().strip()
+        line = line.split("\t")
+        input_ids = eval(line[0])
+        input_mask = eval(line[1])
+        segment_ids = eval(line[2])
+        masked_lm_ids = eval(line[3])
+        next_sent_label = eval(line[4])
+
+        tensors = (torch.tensor(input_ids),
+                   torch.tensor(input_mask),
+                   torch.tensor(segment_ids),
+                   torch.tensor(masked_lm_ids),
+                   torch.tensor(next_sent_label))
+
+        return tensors
 
 def copy_optimizer_params_to_model(named_params_model, named_params_optimizer):
     """ Utility function for optimize_on_cpu and 16-bits training.
@@ -213,28 +145,27 @@ def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
-    parser.add_argument("--data_dir",
+    parser.add_argument("--input_file",
                         default=None,
                         type=str,
                         required=True,
-                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
+                        help="The input file. Every line is an instance")
     parser.add_argument("--bert_model", default=None, type=str, required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
-    parser.add_argument("--task_name",
+    parser.add_argument("--output_dir",
                         default=None,
                         type=str,
                         required=True,
-                        help="The name of the task to train.")
-    # parser.add_argument("--output_dir",
-    #                     default=None,
-    #                     type=str,
-    #                     required=True,
-    #                     help="The output directory where the model checkpoints will be written.")
+                        help="The output directory where the model checkpoints will be written.")
 
     ## Other parameters
+    parser.add_argument("--eval_input_file",
+                        default=None,
+                        type=str,
+                        help="The eval input file. Every line is an instance")
     parser.add_argument("--max_seq_length",
-                        default=128,
+                        default=256,
                         type=int,
                         help="The maximum total input sequence length after WordPiece tokenization. \n"
                              "Sequences longer than this will be truncated, and sequences shorter \n"
@@ -248,19 +179,19 @@ def main():
                         action='store_true',
                         help="Whether to run eval on the dev set.")
     parser.add_argument("--train_batch_size",
-                        default=32,
+                        default=16,
                         type=int,
                         help="Total batch size for training.")
-    parser.add_argument("--eval_batch_size",
-                        default=8,
+    parser.add_argument("--input_length",
+                        default=0,
                         type=int,
-                        help="Total batch size for eval.")
+                        help="Length of the input.")
     parser.add_argument("--learning_rate",
                         default=5e-5,
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=3.0,
+                        default=10.0,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--warmup_proportion",
@@ -298,11 +229,6 @@ def main():
 
     args = parser.parse_args()
 
-    processors = {
-        "hyperpartisan": HyperProcessor,
-        "emw": EmwProcessor,
-    }
-
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -335,21 +261,6 @@ def main():
     #     raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
     # os.makedirs(args.output_dir, exist_ok=True)
 
-    task_name = args.task_name.lower()
-
-    if task_name not in processors:
-        raise ValueError("Task not found: %s" % (task_name))
-
-    processor = processors[task_name]()
-#    label_list = processor.get_labels()
-
-    train_features = None
-    num_train_steps = None
-    if args.do_train:
-        train_features = processor.get_train_examples(args.data_dir)
-        num_train_steps = int(
-            len(train_features) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
-
     # Prepare model
     model = BertForPreTraining.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE)
     if args.fp16:
@@ -370,7 +281,7 @@ def main():
                             for n, param in model.named_parameters()]
     else:
         param_optimizer = list(model.named_parameters())
-    logger.info("ASDASFASFASFJASIFJASILFJASLIFJLFIIASFL")
+
     no_decay = ['bias', 'gamma', 'beta']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
@@ -378,39 +289,45 @@ def main():
         ]
 #    logger.info(optimizer_grouped_parameters)
 #    logger.info([str(n) for n,p in param_optimizer if p.grad is not None])
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=num_train_steps)
 
     global_step = 0
     if args.do_train:
+        if args.input_length == 0:
+            with open(args.input_file, "r", encoding="utf-8") as f:
+                input_length = sum([1 for line in f])
+        else:
+            input_length = args.input_length
+
+        num_train_steps = int(input_length / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=num_train_steps)
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_features))
+        logger.info("  Num examples = %d", input_length)
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_steps)
 #        logger.info("inpput_id size = %d", len(train_features[0].input_ids))
-        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_masked_lm_ids = torch.tensor([f.masked_lm_ids for f in train_features], dtype=torch.long)
-        all_next_sent_labels = torch.tensor([f.next_sent_label for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_masked_lm_ids, all_next_sent_labels)
-        if args.local_rank == -1:
-            train_sampler = RandomSampler(train_data)
-        else:
-            train_sampler = DistributedSampler(train_data)
 
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        train_dataset = BertDataset(args.input_file, input_length)
+        eval_dataset = BertDataset(args.eval_input_file, 5000)
+
+        if args.local_rank == -1:
+            train_sampler = RandomSampler(train_dataset)
+            eval_sampler = RandomSampler(eval_dataset)
+        else:
+            train_sampler = DistributedSampler(train_dataset)
+            eval_sampler = DistributedSampler(eval_dataset)
+
+        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
+        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.train_batch_size)
 
         logger.info("Created DataLoader")
+        best_loss = 1.0
         model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            tr_loss = 0
-            nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device) for t in batch) # .view(args.train_batch_size, -1)
-                input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = batch
+                input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = tuple(t.to(device) for t in batch)
                 loss = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
@@ -421,9 +338,7 @@ def main():
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
                 loss.backward()
-                tr_loss += loss.item()
-                nb_tr_examples += input_ids.size(0)
-                nb_tr_steps += 1
+
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     if args.fp16 or args.optimize_on_cpu:
                         if args.fp16 and args.loss_scale != 1.0:
@@ -440,13 +355,44 @@ def main():
                         optimizer.step()
                         copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
                     else:
+                        # modify learning rate with special warm up BERT uses
+                        lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_steps, args.warmup_proportion)
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = lr_this_step
                         optimizer.step()
-                    model.zero_grad()
-                    global_step += 1
 
-        save_model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-        output_file = os.path.join(args.data_dir, "pytorch_model.bin")
-        torch.save(save_model.state_dict(), output_file)
+                    optimizer.zero_grad()
+
+                if step % 5000 == 0:
+                    input_ids=input_mask=segment_ids=masked_lm_ids=next_sent_label=loss=None
+                    torch.cuda.empty_cache()
+                    model.eval()
+                    bcount = 0
+                    total_loss = 0.0
+                    for eval_batch in eval_dataloader:
+                        eval_batch = tuple(t.to(device) for t in eval_batch)
+                        input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = eval_batch
+                        cur_loss = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
+                        if n_gpu > 1:
+                            cur_loss = cur_loss.mean() # mean() to average on multi-gpu.
+                        total_loss += cur_loss
+                        bcount += 1
+
+                    curr_loss = total_loss / bcount
+                    if best_loss > cur_loss:
+                        best_loss = cur_loss
+                        logger.info("** Saving model - Loss = " + str(cur_loss) + " **")
+                        model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
+                        output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
+                        torch.save(model_to_save.state_dict(), output_model_file)
+                    torch.cuda.empty_cache()
+                    model.train()
+
+                global_step += 1
+
+        # save_model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
+        # output_file = os.path.join(args.data_dir, "pytorch_model.bin")
+        # torch.save(save_model.state_dict(), output_file)
 
     # if args.do_eval:
     #     eval_examples = processor.get_dev_examples(args.data_dir)
